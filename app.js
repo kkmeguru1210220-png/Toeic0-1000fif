@@ -1,3 +1,4 @@
+
 (() => {
   "use strict";
 
@@ -174,6 +175,49 @@
     return result;
   }
 
+  // 復習問題はモードごとに「未出題リスト」を持ち、一巡するまで同じ問題に偏らない。
+  // 保存先は従来と同じ学習履歴なので、アプリ再起動後も続きから出題できる。
+  function takeReviewBatch(candidates, mode, limit = 10) {
+    const byId = new Map(candidates.map((word) => [word.id, word]));
+    const ids = [...byId.keys()];
+    if (ids.length <= limit) return shuffle([...byId.values()]);
+
+    if (!state.reviewCycles || typeof state.reviewCycles !== "object") state.reviewCycles = {};
+    const previous = state.reviewCycles[mode] || {};
+    const eligible = new Set(ids);
+    const known = new Set(Array.isArray(previous.known) ? previous.known : []);
+    const previousBatch = Array.isArray(previous.lastBatch) ? previous.lastBatch : [];
+    const queued = new Set();
+    let remaining = (Array.isArray(previous.remaining) ? previous.remaining : []).filter((id) => {
+      if (!eligible.has(id) || queued.has(id)) return false;
+      queued.add(id);
+      return true;
+    });
+
+    // 復習対象に新しく増えた単語は、次の出題候補へ追加する。
+    const added = shuffle(ids.filter((id) => !known.has(id) && !queued.has(id)));
+    remaining = [...added, ...remaining];
+
+    const selected = [];
+    while (selected.length < Math.min(limit, ids.length)) {
+      if (!remaining.length) {
+        // 一巡したときだけ新しい順番を作る。直前の10問はできるだけ後回し。
+        const avoid = new Set([...previousBatch, ...selected]);
+        const fresh = shuffle(ids.filter((id) => !selected.includes(id)));
+        remaining = [
+          ...fresh.filter((id) => !avoid.has(id)),
+          ...fresh.filter((id) => avoid.has(id)),
+        ];
+      }
+      const nextId = remaining.shift();
+      if (!selected.includes(nextId)) selected.push(nextId);
+    }
+
+    state.reviewCycles[mode] = { known: ids, remaining, lastBatch: selected };
+    saveState();
+    return selected.map((id) => byId.get(id));
+  }
+
   function startSession(mode = "all") {
     const distinctMeanings = new Set(state.words.map((word) => word.meaning.trim().toLocaleLowerCase())).size;
     if (state.words.length < 4 || distinctMeanings < 4) {
@@ -187,11 +231,12 @@
     const targetBand = bandWrongMode ? mode.slice("band-wrong:".length) : mode.startsWith("band:") ? mode.slice(5) : "";
     let candidates = [];
     if (mode === "due") candidates = state.words.filter((word) => word.progress.due <= now).sort((a, b) => a.progress.due - b.progress.due);
-    if (mode === "weak") candidates = state.words.filter((word) => word.progress.lapses > 0 || (word.progress.attempts > 0 && word.progress.correct / word.progress.attempts < 0.7)).sort((a, b) => b.progress.lapses - a.progress.lapses);
-    if (mode === "wrong-all") candidates = shuffle(state.words.filter((word) => word.progress.lapses > 0)).sort((a, b) => b.progress.lapses - a.progress.lapses);
+    if (mode === "weak") candidates = state.words.filter((word) => word.progress.lapses > 0 || (word.progress.attempts > 0 && word.progress.correct / word.progress.attempts < 0.7));
+    if (mode === "wrong-all") candidates = state.words.filter((word) => word.progress.lapses > 0);
     if (mode === "all") candidates = shuffle(state.words);
     if (targetBand && !bandWrongMode) candidates = shuffle(state.words.filter((word) => word.band === targetBand));
-    if (bandWrongMode) candidates = shuffle(state.words.filter((word) => word.band === targetBand && word.progress.lapses > 0)).sort((a, b) => b.progress.lapses - a.progress.lapses);
+    if (bandWrongMode) candidates = state.words.filter((word) => word.band === targetBand && word.progress.lapses > 0);
+    const useReviewCycle = candidates.length > 0 && (mode === "wrong-all" || mode === "weak" || bandWrongMode);
     if (!candidates.length) {
       if (mode === "wrong-all") {
         showToast("間違えた問題はまだありません", "error");
@@ -209,10 +254,10 @@
       : targetBand
       ? `${targetBand} · レベル別復習`
       : mode === "wrong-all" ? "全レベル · 間違えた問題" : mode === "due" ? "復習待ち · 10問" : mode === "weak" ? "苦手語 · 集中復習" : "全レベル · ランダム10問";
-    session = { queue: candidates.slice(0, 10).map((word) => word.id), band: targetBand, modeLabel, index: 0, good: 0, review: 0, answered: 0, answeredCurrent: false, currentChoices: [] };
+    const quizWords = useReviewCycle ? takeReviewBatch(candidates, mode, 10) : candidates.slice(0, 10);
+    session = { queue: quizWords.map((word) => word.id), band: targetBand, modeLabel, index: 0, good: 0, review: 0, answered: 0, answeredCurrent: false, currentChoices: [] };
     navigate("study");
     renderStudyCard();
-    setTimeout(() => speakCurrentWord(true), 120);
   }
 
   function currentWord() {
@@ -257,6 +302,7 @@
     $("#quiz-feedback").classList.remove("is-wrong");
     $("#next-button").hidden = true;
     $("#flashcard").animate?.([{ opacity: 0.25, transform: "translateX(8px)" }, { opacity: 1, transform: "translateX(0)" }], { duration: 220 });
+    speakCurrentWord();
   }
 
   function scheduleWord(word, rating) {
@@ -318,12 +364,8 @@
   function nextQuestion() {
     if (!session?.answeredCurrent) return;
     session.index += 1;
-    if (session.index >= session.queue.length) {
-      finishSession();
-    } else {
-      renderStudyCard();
-      speakCurrentWord(true);
-    }
+    if (session.index >= session.queue.length) finishSession();
+    else renderStudyCard();
   }
 
   function finishSession() {
@@ -724,32 +766,21 @@
     if (!confirm("登録単語は残したまま、すべての学習履歴をリセットしますか？")) return;
     state.words.forEach((word) => { word.progress = freshProgress(); });
     state.activity = {};
+    state.reviewCycles = {};
     saveState();
     renderDashboard();
     renderLibrary();
     showToast("学習履歴をリセットしました");
   }
 
-  function speakCurrentWord(silent = false) {
+  function speakCurrentWord() {
     const word = currentWord();
-    if (!word) return false;
-    if (!("speechSynthesis" in window) || !("SpeechSynthesisUtterance" in window)) {
-      if (!silent) showToast("このブラウザでは音声再生を利用できません", "error");
-      return false;
-    }
-    try {
-      window.speechSynthesis.cancel();
-      window.speechSynthesis.resume?.();
-      const utterance = new window.SpeechSynthesisUtterance(word.word);
-      utterance.lang = "en-US";
-      utterance.rate = 0.85;
-      window.speechSynthesis.speak(utterance);
-      return true;
-    } catch (error) {
-      console.warn("Speech playback failed:", error);
-      if (!silent) showToast("音声を再生できませんでした", "error");
-      return false;
-    }
+    if (!word || !("speechSynthesis" in window)) return showToast("このブラウザでは音声再生を利用できません", "error");
+    speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(word.word);
+    utterance.lang = "en-US";
+    utterance.rate = 0.85;
+    speechSynthesis.speak(utterance);
   }
 
   $$('[data-nav]').forEach((button) => button.addEventListener("click", () => navigate(button.dataset.nav)));
