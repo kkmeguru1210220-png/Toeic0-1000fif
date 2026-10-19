@@ -175,18 +175,18 @@
     return result;
   }
 
-  // 復習問題はモードごとに「未出題リスト」を持ち、一巡するまで同じ問題に偏らない。
-  // 保存先は従来と同じ学習履歴なので、アプリ再起動後も続きから出題できる。
+  // 一度でも間違えた問題は、対象全体を一巡するまでは重複して出題しない。
+  // 例: 対象12語 → 1回目10語、2回目2語、3回目から新しい周回。
+  // 出題済み/未出題リストは学習履歴と同じlocalStorageに保存する。
   function takeReviewBatch(candidates, mode, limit = 10) {
     const byId = new Map(candidates.map((word) => [word.id, word]));
     const ids = [...byId.keys()];
-    if (ids.length <= limit) return shuffle([...byId.values()]);
+    if (!ids.length) return [];
 
     if (!state.reviewCycles || typeof state.reviewCycles !== "object") state.reviewCycles = {};
     const previous = state.reviewCycles[mode] || {};
     const eligible = new Set(ids);
     const known = new Set(Array.isArray(previous.known) ? previous.known : []);
-    const previousBatch = Array.isArray(previous.lastBatch) ? previous.lastBatch : [];
     const queued = new Set();
     let remaining = (Array.isArray(previous.remaining) ? previous.remaining : []).filter((id) => {
       if (!eligible.has(id) || queued.has(id)) return false;
@@ -194,26 +194,24 @@
       return true;
     });
 
-    // 復習対象に新しく増えた単語は、次の出題候補へ追加する。
+    // 新しく間違えた語は、その周回の未出題リストに追加する。
     const added = shuffle(ids.filter((id) => !known.has(id) && !queued.has(id)));
     remaining = [...added, ...remaining];
 
-    const selected = [];
-    while (selected.length < Math.min(limit, ids.length)) {
-      if (!remaining.length) {
-        // 一巡したときだけ新しい順番を作る。直前の10問はできるだけ後回し。
-        const avoid = new Set([...previousBatch, ...selected]);
-        const fresh = shuffle(ids.filter((id) => !selected.includes(id)));
-        remaining = [
-          ...fresh.filter((id) => !avoid.has(id)),
-          ...fresh.filter((id) => avoid.has(id)),
-        ];
-      }
-      const nextId = remaining.shift();
-      if (!selected.includes(nextId)) selected.push(nextId);
+    // 全語を出し終えた「次の回」だけ、新しい周回を作る。
+    // 最後の回に出た語は可能な範囲で新周回の後ろに置く。
+    if (!remaining.length) {
+      const recent = new Set(Array.isArray(previous.lastBatch) ? previous.lastBatch : []);
+      const nextCycle = shuffle(ids);
+      remaining = [
+        ...nextCycle.filter((id) => !recent.has(id)),
+        ...nextCycle.filter((id) => recent.has(id)),
+      ];
     }
 
-    state.reviewCycles[mode] = { known: ids, remaining, lastBatch: selected };
+    // 周回の最終回が10語未満でも追加補充しない（前の10語を混ぜない）。
+    const selected = remaining.splice(0, limit);
+    state.reviewCycles[mode] = { known: ids, remaining, lastBatch: selected, version: 3 };
     saveState();
     return selected.map((id) => byId.get(id));
   }
@@ -255,7 +253,9 @@
       ? `${targetBand} · レベル別復習`
       : mode === "wrong-all" ? "全レベル · 間違えた問題" : mode === "due" ? "復習待ち · 10問" : mode === "weak" ? "苦手語 · 集中復習" : "全レベル · ランダム10問";
     const quizWords = useReviewCycle ? takeReviewBatch(candidates, mode, 10) : candidates.slice(0, 10);
-    session = { queue: quizWords.map((word) => word.id), band: targetBand, modeLabel, index: 0, good: 0, review: 0, answered: 0, answeredCurrent: false, currentChoices: [] };
+    // 画面に「一巡式」と表示し、iPhoneで新しいJSが読み込まれたか確認できる。
+    const displayModeLabel = useReviewCycle ? `${modeLabel} · 一巡式（今回${quizWords.length}/${candidates.length}問）` : modeLabel;
+    session = { queue: quizWords.map((word) => word.id), band: targetBand, modeLabel: displayModeLabel, index: 0, good: 0, review: 0, answered: 0, answeredCurrent: false, currentChoices: [] };
     navigate("study");
     renderStudyCard();
   }
