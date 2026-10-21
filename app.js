@@ -130,7 +130,7 @@
     document.head.append(style);
     const alert=document.createElement('p');alert.id='global-storage-issue';alert.setAttribute('role','alert');alert.hidden=!storageIssue;alert.textContent=storageIssue;document.querySelector('main').prepend(alert);
     const section=document.createElement('section');section.className='section-block';section.id='supplement-section';
-    section.innerHTML=`<div class="section-heading compact"><div><p class="eyebrow">SUPPLEMENT & COLUMN · v4</p><h2>補足・コラムを復習</h2><p class="section-note">項目ごとに一巡。意味の違いや別表現も、それぞれの問題として記録します。</p></div></div>
+    section.innerHTML=`<div class="section-heading compact"><div><p class="eyebrow">SUPPLEMENT & COLUMN · v4.2</p><h2>補足・コラムを復習</h2><p class="section-note">項目ごとに一巡。意味の違いや別表現も、それぞれの問題として記録します。</p></div></div>
       <div class="sup-audio"><label><input type="checkbox" id="sup-auto-audio">問題の音声を自動再生</label><label><input type="checkbox" id="sup-listening">S2・S5は音声だけで挑戦</label><label>速さ<select id="sup-rate"><option value="0.7">ゆっくり</option><option value="0.85">標準</option><option value="1">自然</option></select></label></div><div class="sup-grid"></div>`;
     for (const s of SUPPLEMENT_SECTIONS) {
       const words=state.words.filter(w=>w.group===s.key);
@@ -245,9 +245,16 @@
     if(!q)return;
     document.getElementById('card-word').textContent=q.prompt;
     let html='';
-    if(word.phrase&&word.phrase!==q.prompt)html+=`<p><strong>${escapeHtml(word.phrase)}</strong>${word.translation?'\n'+escapeHtml(word.translation):''}</p>`;
+    let related=q.related||[];
+    if(word.group==='S4'){
+      const meaning=q.kind==='cloze'?related.find(([en])=>en===word.word)?.[1]:word.meaning;
+      document.getElementById('feedback-title').textContent=`${q.kind==='cloze'?'正解':'対象の語句'}：${word.word}`;
+      document.getElementById('feedback-translation').textContent=`語句の意味：${meaning||''}`;
+      html+=`<div class="sup-sentence-translation"><h4>英文全体の意味</h4><p><strong>${escapeHtml(word.phrase)}</strong></p><p>${escapeHtml(word.translation)}</p></div>`;
+      related=related.filter(([en,ja])=>en!==word.word||ja!==meaning);
+    }else if(word.phrase&&word.phrase!==q.prompt)html+=`<p><strong>${escapeHtml(word.phrase)}</strong>${word.translation?'\n'+escapeHtml(word.translation):''}</p>`;
     if(word.note)html+=`<p>${escapeHtml(word.note)}</p>`;
-    if(q.related?.length)html+=`<h4>${q.relatedTitle||'関連する語・別の意味'}</h4><ul>${q.related.map(([en,ja])=>`<li><strong>${escapeHtml(en)}</strong> — ${escapeHtml(ja)}</li>`).join('')}</ul>`;
+    if(related.length)html+=`<h4>${q.relatedTitle||'関連する語・別の意味'}</h4><ul>${related.map(([en,ja])=>`<li><strong>${escapeHtml(en)}</strong> — ${escapeHtml(ja)}</li>`).join('')}</ul>`;
     if(q.source)html+=`<small>${escapeHtml(q.source)}</small>`;
     box.innerHTML=html;
     const speak=document.getElementById('speak-button');speak.disabled=false;speak.setAttribute('aria-label','完成した英文の音声を聞く');
